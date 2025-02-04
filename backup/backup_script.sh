@@ -24,6 +24,7 @@ mkdir -p "$LOG_DIR"
 # Function to check for config changes and notify users
 detect_config_change() {
     local host_file="$1"
+    local ssh_auth_method="$2"
     local host_ip
     local config_backup_dir
 
@@ -41,9 +42,13 @@ detect_config_change() {
             echo "WARNING: Backup configuration changed for $host_ip!" | tee -a "$LOG_DIR/${host_ip}-config_change.log"
             echo "$diff_output" | tee -a "$LOG_DIR/${host_ip}-config_change.log"
 
-            # Notify remote host if enabled
+            # Notify remote host if key-based authentication is available
             if [[ "$WALL_NOTIF" == "true" ]]; then
-                ssh -i "$SSH_KEY" "${SSH_USER}@${host_ip}" "wall -n 'Backup configuration change detected on this system.'" 2>/dev/null
+                if [[ "$ssh_auth_method" == "key" ]]; then
+                    ssh -i "$SSH_KEY" "${SSH_USER}@${host_ip}" "wall -n 'Backup configuration change detected on this system.'" 2>/dev/null
+                else
+                    echo "WARNING: Skipping remote wall notification for $host_ip (Key-based authentication unavailable)." | tee -a "$LOG_DIR/${host_ip}-config_change.log"
+                fi
                 wall -n "Backup configuration change detected for host $host_ip."
             fi
         fi
@@ -53,6 +58,7 @@ detect_config_change() {
     cp "$host_file" "$config_backup_dir"
 }
 
+
 # Function to perform the backup
 backup_host() {
     local host_file="$1"
@@ -61,6 +67,7 @@ backup_host() {
     local host_backup_dir
     local log_file
     local backup_failed=false
+    local ssh_auth_method=""
 
     host_ip=$(basename "$host_file")  # Extract host IP from filename
     backup_time=$(TZ="America/New_York" date +"%Y-%m-%d_%H:%M:%SZ")
@@ -68,9 +75,6 @@ backup_host() {
     log_file="$LOG_DIR/${host_ip}---${backup_time}.log"
 
     echo "Starting backup for $host_ip at $backup_time" | tee -a "$log_file"
-
-    # Detect config changes before backup starts
-    detect_config_change "$host_file"
 
     # Check available disk space
     AVAILABLE_SPACE=$(df --output=avail "$BACKUP_DIR" | tail -1)
@@ -81,14 +85,17 @@ backup_host() {
     # Test SSH connection
     if ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "${SSH_USER}@${host_ip}" "exit" 2>/dev/null; then
         echo "Authentication: SSH Key (${SSH_KEY##*/})" | tee -a "$log_file"
-        auth_method="-e \"ssh -i $SSH_KEY\""
+        ssh_auth_method="key"
     elif [[ -n "$SSH_PASS" ]]; then
         echo "Authentication: Password-based login" | tee -a "$log_file"
-        auth_method="sshpass -p \"$SSH_PASS\" rsync -e ssh"
+        ssh_auth_method="password"
     else
         echo "ERROR: Cannot connect to $host_ip via SSH. Skipping backup." | tee -a "$log_file"
         backup_failed=true
     fi
+
+    # Detect config changes (after verifying SSH access)
+    detect_config_change "$host_file" "$ssh_auth_method"
 
     echo "Directories to backup:" | tee -a "$log_file"
 
@@ -102,11 +109,11 @@ backup_host() {
         mkdir -p "$(dirname "$target_path")"
 
         # Perform rsync backup with verbose logging
-        rsync -avz --progress --delete ${auth_method} "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+        rsync -avz --progress --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
         if [[ $? -ne 0 ]]; then
             echo "ERROR: rsync failed for $remote_path on $host_ip. Retrying..." | tee -a "$log_file"
             sleep 5  # Short delay before retry
-            rsync -avz --progress --delete ${auth_method} "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+            rsync -avz --progress --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
             if [[ $? -ne 0 ]]; then
                 echo "ERROR: Second rsync attempt failed for $remote_path on $host_ip. Skipping." | tee -a "$log_file"
                 backup_failed=true
