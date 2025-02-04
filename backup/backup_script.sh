@@ -9,6 +9,7 @@ SSH_KEY="$HOME/.ssh/id_rsa"  # Default SSH private key
 SSH_PASS=""  # Optional fallback password
 LOG_DIR="/var/log/cron/backup"  # Default log directory
 NOTIF_EMAIL=""  # Email for failure notifications (leave blank to disable)
+WALL_NOTIF="true"  # Set to "true" to enable wall notifications, "false" to disable
 
 # Ensure required directories are provided
 if [[ -z "$CONFIG_DIR" || -z "$BACKUP_DIR" ]]; then
@@ -19,6 +20,38 @@ fi
 # Create backup directory and log directory if they don't exist
 mkdir -p "$BACKUP_DIR"
 mkdir -p "$LOG_DIR"
+
+# Function to check for config changes and notify users
+detect_config_change() {
+    local host_file="$1"
+    local host_ip
+    local config_backup_dir
+
+    host_ip=$(basename "$host_file")
+    config_backup_dir="$BACKUP_DIR/$host_ip/.last_config"
+
+    # If there’s a previous config, compare it with the current one
+    if [[ -f "$config_backup_dir" ]]; then
+        diff_output=$(diff -u "$config_backup_dir" "$host_file")
+        if [[ -n "$diff_output" ]]; then
+            echo "WARNING: Backup configuration changed for $host_ip!"
+            echo "$diff_output"
+
+            # Log the detected changes
+            echo "WARNING: Backup configuration changed for $host_ip!" | tee -a "$LOG_DIR/${host_ip}-config_change.log"
+            echo "$diff_output" | tee -a "$LOG_DIR/${host_ip}-config_change.log"
+
+            # Notify remote host if enabled
+            if [[ "$WALL_NOTIF" == "true" ]]; then
+                ssh -i "$SSH_KEY" "${SSH_USER}@${host_ip}" "wall -n 'Backup configuration change detected on this system.'" 2>/dev/null
+                wall -n "Backup configuration change detected for host $host_ip."
+            fi
+        fi
+    fi
+
+    # Save the current config as the new "last known" version
+    cp "$host_file" "$config_backup_dir"
+}
 
 # Function to perform the backup
 backup_host() {
@@ -35,6 +68,9 @@ backup_host() {
     log_file="$LOG_DIR/${host_ip}---${backup_time}.log"
 
     echo "Starting backup for $host_ip at $backup_time" | tee -a "$log_file"
+
+    # Detect config changes before backup starts
+    detect_config_change "$host_file"
 
     # Check available disk space
     AVAILABLE_SPACE=$(df --output=avail "$BACKUP_DIR" | tail -1)
@@ -87,7 +123,7 @@ backup_host() {
 }
 
 export -f backup_host
-export BACKUP_DIR SSH_USER SSH_KEY SSH_PASS LOG_DIR NOTIF_EMAIL
+export BACKUP_DIR SSH_USER SSH_KEY SSH_PASS LOG_DIR NOTIF_EMAIL WALL_NOTIF
 
 # Run backups in parallel
 find "$CONFIG_DIR" -type f | xargs -I {} -P "$MAX_PARALLEL" bash -c 'backup_host "$@"' _ {}
