@@ -109,11 +109,14 @@ backup_host() {
         mkdir -p "$(dirname "$target_path")"
 
         # Perform rsync backup with verbose logging
-        rsync -avz --progress --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+        #This is the old rsync command that cannot do root access for files
+        #rsync -avz --stats --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+        rsync -avz --stats --delete -e "ssh -i $SSH_KEY ${SSH_USER}@${host_ip} sudo rsync --server --sender -logDtpre.iLsfx --numeric-ids ${remote_path}" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
         if [[ $? -ne 0 ]]; then
             echo "ERROR: rsync failed for $remote_path on $host_ip. Retrying..." | tee -a "$log_file"
             sleep 5  # Short delay before retry
-            rsync -avz --progress --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+            #rsync -avz --progress --delete -e "ssh -i $SSH_KEY" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
+            rsync -avz --stats --delete -e "ssh -i $SSH_KEY ${SSH_USER}@${host_ip} sudo rsync --server --sender -logDtpre.iLsfx --numeric-ids ${remote_path}" "${SSH_USER}@${host_ip}:$remote_path" "$target_path" 2>&1 | tee -a "$log_file"
             if [[ $? -ne 0 ]]; then
                 echo "ERROR: Second rsync attempt failed for $remote_path on $host_ip. Skipping." | tee -a "$log_file"
                 backup_failed=true
